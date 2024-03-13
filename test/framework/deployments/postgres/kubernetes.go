@@ -35,6 +35,7 @@ func (t *k8SDeployment) Deploy(cluster framework.Cluster) error {
 			"postgresql.primary.fullname":             t.options.primaryName,
 		},
 		KubectlOptions: cluster.GetKubectlOptions(t.options.namespace),
+		Version:        "12.6.0",
 	}
 	if t.options.initScript != "" {
 		initScriptCfg := fmt.Sprintf(`
