@@ -40,7 +40,7 @@ require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.17.0
-	github.com/prometheus/client_model v0.4.1-0.20230718164431-9a2bf3000d16
+	github.com/prometheus/client_model v0.6.1
 	github.com/prometheus/common v0.44.0
 	github.com/sethvargo/go-retry v0.2.4
 	github.com/shopspring/decimal v1.3.1
@@ -71,7 +71,7 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20230711160842-782d3b101e98
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20230731193218-e0aa005b6bdf
 	google.golang.org/grpc v1.58.2
-	google.golang.org/protobuf v1.31.0
+	google.golang.org/protobuf v1.33.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	helm.sh/helm/v3 v3.13.0
 	istio.io/pkg v0.0.0-20221115183735-2aabb09bf0bb
