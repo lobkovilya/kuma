@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/pkg/errors"
 
 	mesh_proto "github.com/kumahq/kuma/api/mesh/v1alpha1"
 	"github.com/kumahq/kuma/api/system/v1alpha1"
@@ -315,4 +317,103 @@ var _ = Describe("Zone Sync", func() {
 			VerifySyncDoesntDeletePredefinedConfigMaps()
 		})
 	})
+
+	Context("Delta XDS NACK", func() {
+		var zoneSyncer sync_store_v2.ResourceSyncer
+		runtimeInfo := core_runtime.NewRuntimeInfo("global-inst", config_core.Global)
+		newPolicySyncClient := func(zoneName string, resourceSyncer sync_store_v2.ResourceSyncer, cs *grpc.MockDeltaClientStream, configs map[string]bool) kds_client_v2.KDSSyncClient {
+			return kds_client_v2.NewKDSSyncClient(
+				core.Log.WithName("kds-sink"),
+				registry.Global().ObjectTypes(model.HasKDSFlag(model.GlobalToZoneSelector)),
+				kds_client_v2.NewDeltaKDSStream(cs, zoneName, runtimeInfo, ""),
+				sync_store_v2.ZoneSyncCallback(context.Background(), configs, resourceSyncer, false, zoneName, nil, "kuma-system"),
+				0,
+			)
+		}
+
+		BeforeEach(func() {
+			globalStore = memory.NewStore()
+			wg := &sync.WaitGroup{}
+
+			cfg := kuma_cp.DefaultConfig()
+			cfg.Multizone.Zone.Name = "global"
+
+			kdsCtx := kds_context.DefaultContext(context.Background(), manager.NewResourceManager(globalStore), cfg)
+			srv, err := setup.NewKdsServerBuilder(globalStore).
+				WithTypes(registry.Global().ObjectTypes(model.HasKDSFlag(model.GlobalToZoneSelector))).
+				WithKdsContext(kdsCtx).
+				Delta()
+			Expect(err).ToNot(HaveOccurred())
+			serverStream := grpc.NewMockDeltaServerStream()
+			wg.Add(1)
+			go func() {
+				defer func() {
+					wg.Done()
+					GinkgoRecover()
+				}()
+				Expect(srv.GlobalToZoneSync(serverStream)).ToNot(HaveOccurred())
+			}()
+
+			stop := make(chan struct{})
+			clientStream := serverStream.ClientStream(stop)
+
+			zoneStore = &errorStore{ResourceStore: memory.NewStore(), errorNameNTimes: map[string]int{
+				"nack-thrice": 3,
+			}}
+			metrics, err := core_metrics.NewMetrics("")
+			Expect(err).ToNot(HaveOccurred())
+			zoneSyncer, err = sync_store_v2.NewResourceSyncer(core.Log.WithName("kds-syncer"), zoneStore, store.NoTransactions{}, metrics, context.Background())
+			Expect(err).ToNot(HaveOccurred())
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = newPolicySyncClient(zoneName, zoneSyncer, clientStream, kdsCtx.Configs).Receive()
+			}()
+			closeFunc = func() {
+				defer GinkgoRecover()
+				Expect(clientStream.CloseSend()).To(Succeed())
+				close(stop)
+				wg.Wait()
+			}
+		})
+
+		XIt("should retry NACK", func() {
+			err := globalStore.Create(context.Background(), &mesh.MeshResource{Spec: samples.Mesh1}, store.CreateByKey("nack-thrice", model.NoMesh))
+			Expect(err).ToNot(HaveOccurred())
+
+			// given the backoff for NACK is 1s, it's going to take about 3s to create 'nack-thrice'
+			// for the next 3 second we're bombarding Global with new resources every 10ms
+			for i := 0; i < 300; i++ {
+				err := globalStore.Create(context.Background(), &mesh.MeshResource{Spec: samples.Mesh2}, store.CreateByKey(fmt.Sprintf("no-nack-%d", i), model.NoMesh))
+				Expect(err).ToNot(HaveOccurred())
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			Eventually(func(g Gomega) {
+				actual := mesh.MeshResourceList{}
+				err := zoneStore.List(context.Background(), &actual)
+				g.Expect(err).ToNot(HaveOccurred())
+				g.Expect(actual.Items).To(HaveLen(301))
+			}, "10s", "100ms").Should(Succeed())
+
+			actual := mesh.MeshResourceList{}
+			err = zoneStore.List(context.Background(), &actual)
+			Expect(err).ToNot(HaveOccurred())
+		})
+	})
 })
+
+type errorStore struct {
+	store.ResourceStore
+	errorNameNTimes map[string]int
+}
+
+func (s *errorStore) Create(ctx context.Context, r model.Resource, fs ...store.CreateOptionsFunc) error {
+	opts := store.NewCreateOptions(fs...)
+	if n, ok := s.errorNameNTimes[opts.Name]; ok && n > 0 {
+		s.errorNameNTimes[opts.Name]--
+		return errors.Errorf("errorStore returns error for %s", opts.Name)
+	}
+	return s.ResourceStore.Create(ctx, r, fs...)
+}
