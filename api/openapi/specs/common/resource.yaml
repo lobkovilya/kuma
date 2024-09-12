@@ -177,6 +177,9 @@ components:
           description: The list of policies that contributed to the 'conf'. The order is important as it reflects in what order confs were merged to get the resulting 'conf'.
           items:
             $ref: '#/components/schemas/ResourceRuleOrigin'
+        statPrefix:
+          type: string
+          description: The 'statPrefix' of the Envoy resource. The field is useful if we want to match Envoy stats with the real resource meta.
     ResourceRuleOrigin:
       type: object
       properties:
