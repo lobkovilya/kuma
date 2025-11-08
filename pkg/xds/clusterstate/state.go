@@ -44,7 +44,7 @@ func (p *Provider) GetState() (*State, error) {
 // Subscribe accepts a callback that will be invoked when there is diff.
 // Depending on the strategy of Provider it might happen not immediately when change happened in the cluster.
 // Diff is empty only on the initial invokation, all the following invokations for the given function
-// are guaranteed to have non-empty diff. State
+// are guaranteed to have non-empty diff. State can be shared across multiple gorotuines that's why it's read-only.
 func (p *Provider) Subscribe(fn func(*State, []Diff)) {
 }
 
