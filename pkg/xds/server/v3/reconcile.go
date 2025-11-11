@@ -25,10 +25,15 @@ var reconcileLog = core.Log.WithName("xds").WithName("reconcile")
 
 var _ xds_sync.SnapshotReconciler = &reconciler{}
 
+type proxyStateProvider interface {
+	Get(typeURL string, proxyLabels map[string]string) (proto.Message, error)
+}
+
 type reconciler struct {
-	generator      snapshotGenerator
-	cacher         snapshotCacher
-	statsCallbacks util_xds.StatsCallbacks
+	generator         snapshotGenerator
+	proxyStateProvider proxyStateProvider
+	cacher            snapshotCacher
+	statsCallbacks    util_xds.StatsCallbacks
 }
 
 func (r *reconciler) Clear(proxyId *model.ProxyId) error {
@@ -50,9 +55,55 @@ func (r *reconciler) clearUndeliveredConfigStats(nodeId *envoy_core.Node) {
 	}
 }
 
+func getProxyLabels(proxy *model.Proxy) map[string]string {
+	// don't worry about it I'm going to implement it later, but you can use it
+	return map[string]string{}
+}
+
+func (r *reconciler) generateSnapshotFromProxyState(proxy *model.Proxy) (*envoy_cache.Snapshot, error) {
+	proxyLabels := getProxyLabels(proxy)
+	version := "" // empty value is a sign to other components to generate the version automatically
+	resources := map[envoy_resource.Type][]envoy_types.Resource{}
+
+	// Define all resource types we want to fetch
+	resourceTypes := []envoy_resource.Type{
+		envoy_resource.ClusterType,
+		envoy_resource.ListenerType,
+		envoy_resource.RouteType,
+		envoy_resource.EndpointType,
+		envoy_resource.SecretType,
+		envoy_resource.RuntimeType,
+	}
+
+	for _, resourceType := range resourceTypes {
+		resource, err := r.proxyStateProvider.Get(resourceType, proxyLabels)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to get resource for type %s", resourceType)
+		}
+
+		if resource != nil {
+			// Convert proto.Message to envoy_types.Resource
+			if envoyResource, ok := resource.(envoy_types.Resource); ok {
+				resources[resourceType] = []envoy_types.Resource{envoyResource}
+			}
+		}
+	}
+
+	return envoy_cache.NewSnapshot(version, resources)
+}
+
 func (r *reconciler) Reconcile(ctx context.Context, xdsCtx xds_context.Context, proxy *model.Proxy) (bool, error) {
 	node := &envoy_core.Node{Id: proxy.Id.String()}
-	snapshot, err := r.generator.GenerateSnapshot(ctx, xdsCtx, proxy)
+
+	var snapshot *envoy_cache.Snapshot
+	var err error
+
+	if r.proxyStateProvider != nil {
+		snapshot, err = r.generateSnapshotFromProxyState(proxy)
+	} else {
+		snapshot, err = r.generator.GenerateSnapshot(ctx, xdsCtx, proxy)
+	}
+
 	if err != nil {
 		return false, errors.Wrapf(err, "failed to generate a snapshot")
 	}
